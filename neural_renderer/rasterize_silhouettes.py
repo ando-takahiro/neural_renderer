@@ -263,10 +263,256 @@ class RasterizeSilhouette(chainer.Function):
         return grad_faces,
 
     def forward_cpu(self, inputs):
-        raise NotImplementedError
+        xp = chainer.cuda.get_array_module(inputs[0])
+        faces = xp.ascontiguousarray(inputs[0])
+        batch_size, num_faces = faces.shape[:2]
+        image_size = self.image_size
+
+        # initialize buffers
+        self.face_index_map = xp.ascontiguousarray(-1 * xp.ones((batch_size, image_size, image_size), dtype='int32'))
+        self.images = xp.ascontiguousarray(xp.zeros((batch_size, image_size, image_size), dtype='float32'))
+
+        near = self.near
+        far = self.far
+        face_index_map = self.face_index_map.ravel()
+        images = self.images.ravel()
+
+        faces = faces.reshape(-1)  # flatten
+        for i in range(image_size * image_size):
+            # /* current position & index */
+            nf :int = num_faces                   # // short name
+            _is :int = image_size                 # // short name
+            is2 :int = _is * _is                  # // number of pixels
+            pi :int = i                           # // pixel index on all batches
+            bn :int = pi // (is2)                  # // batch number
+            pyi :int = (pi % (is2)) // _is         # // index of current y-position [0, _is - 1]
+            pxi :int = (pi % (is2)) % _is         # // index of current x-position [0, _is - 1]
+            py :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
+            px :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
+
+            # /* for each face */
+            # float* face;          # // current face
+            z_min :float = far      # // z of nearest face
+            z_min_fn :float = -1    # // face number of nearest face
+            for fn in range(nf):
+                # /* go to next face */
+                if fn == 0:
+                    face = faces[(bn * nf) * 3 * 3:]
+                else:
+                    face = face[3 * 3:]
+
+                # /* get vertex of current face */
+                x = (face[0], face[3], face[6])
+                y = (face[1], face[4], face[7])
+                z = (face[2], face[5], face[8])
+
+                # /* check too close & too far */
+                if z[0] <= 0 or z[1] <= 0 or z[2] <= 0:
+                    continue
+                if z_min < z[0] and z_min < z[1] and z_min < z[2]:
+                    continue
+
+                # /* check [py, px] is inside the face */
+                if ((py - y[0]) * (x[1] - x[0]) < (px - x[0]) * (y[1] - y[0])) or \
+                   ((py - y[1]) * (x[2] - x[1]) < (px - x[1]) * (y[2] - y[1])) or \
+                   ((py - y[2]) * (x[0] - x[2]) < (px - x[2]) * (y[0] - y[2])):
+                    continue
+
+                # /* compute f_inv */
+                f_inv = [
+                    y[1] - y[2], x[2] - x[1], x[1] * y[2] - x[2] * y[1],
+                    y[2] - y[0], x[0] - x[2], x[2] * y[0] - x[0] * y[2],
+                    y[0] - y[1], x[1] - x[0], x[0] * y[1] - x[1] * y[0]
+                ]
+                f_inv_denominator = x[2] * (y[0] - y[1]) + x[0] * (y[1] - y[2]) + x[1] * (y[2] - y[0])
+                for k in range(9):
+                    f_inv[k] /= f_inv_denominator
+
+                # /* compute w = f_inv * p */
+                w = [0.0, 0.0, 0.0]
+                for k in range(3):
+                    w[k] = f_inv[3 * k + 0] * px + f_inv[3 * k + 1] * py + f_inv[3 * k + 2]
+
+                # /* sum(w) -> 1, 0 < w < 1 */
+                w_sum = 0.0;
+                for k in range(3):
+                    if w[k] < 0:
+                        w[k] = 0
+                    if 1 < w[k]:
+                        w[k] = 1
+                    w_sum += w[k]
+
+                w[k] /= w_sum
+
+                # /* compute 1 / zp = sum(w / z) & check z-buffer */
+                zp = 1. / (w[0] / z[0] + w[1] / z[1] + w[2] / z[2])
+                if zp <= near or far <= zp:
+                    continue
+
+                # /* check nearest */
+                if zp < z_min:
+                    z_min = zp
+                    z_min_fn = fn
+
+            # /* set to buffer */
+            if 0 <= z_min_fn:
+                face_index_map[i] = z_min_fn
+                images[i] = 1.
+
+        return self.images,
 
     def backward_cpu(self, inputs, grad_outputs):
-        raise NotImplementedError
+        xp = chainer.cuda.get_array_module(inputs[0])
+        faces = xp.ascontiguousarray(inputs[0])
+        grad_images = xp.ascontiguousarray(grad_outputs[0])
+        grad_faces = xp.ascontiguousarray(xp.zeros_like(faces, dtype='float32'))
+        num_faces = faces.shape[1]
+        image_size = self.image_size
+
+        # (faces, self.face_index_map, self.images, grad_images.ravel(), image_size, num_faces, self.eps, grad_faces)
+        face_index_map = self.face_index_map
+        images = self.images
+        grad_images = grad_images.ravel()
+        eps = self.eps
+
+        # [input]
+        # raw float32 faces, raw int32 face_index_map, raw float32 images, float32 grad_images, int32 image_size, int32 num_faces, float32 eps ',
+        # [output]
+        # raw float32 grad_faces
+        org_grad_faces = grad_faces
+        grad_faces = grad_faces.reshape(-1)
+        grad_images = grad_images.reshape(-1)
+        for i in range(num_faces):
+            # /* exit if no gradient from upper layers */
+            if grad_images[i] == 0:
+                break
+
+            # /* compute current position & index */
+            nf :int = num_faces
+            _is :int = image_size
+            is2 :int = _is * _is                    # // number of pixels
+            pi :int = i                             # // pixel index on all batches
+            bn :int = pi // (is2)                    # // batch number
+            pyi :int = (pi % (is2)) // _is           # // index of current y-position [0, _is]
+            pxi :int = (pi % (is2)) % _is           # // index of current x-position [0, _is]
+            py :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
+            px :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
+
+            pfn :int = face_index_map[pi]       # // face number of current position
+            pp :float = images[pi]              # // pixel intensity of current position
+
+            for axis in range(2):
+                for direction in iter(-1, 1):
+                    qfn_last: int = pfn
+                    for d_pq in range(1, _is):
+                        # int qxi, qyi;
+                        # float qx, qy;
+                        if axis == 0:
+                            qxi = pxi + direction * d_pq
+                            qyi = pyi
+                            qx = (1 - 1. / _is) * ((2. / (_is - 1)) * qxi - 1)
+                            qy = py
+                            if qxi < 0 or _is <= qxi:
+                                break
+                        else:
+                            qxi = pxi
+                            qyi = pyi + direction * d_pq
+                            qx = px
+                            qy = (1 - 1. / _is) * ((2. / (_is - 1)) * qyi - 1)
+                            if qyi < 0 or _is <= qyi:
+                                break
+
+                        qi: int = bn * is2 + qyi * _is + qxi
+                        qp: float = images[qi]
+                        diff: float = qp - pp
+                        qfn: int = face_index_map[qi]
+
+                        if diff == 0:
+                            continue                    # // continue if same pixel value
+                        if 0 <= diff * grad_images[i]:
+                            continue      # // continue if wrong gradient
+                        if qfn == qfn_last:
+                            continue              # // continue if p & q are on same face
+
+                        # /* adjacent point to check edge */
+                        # int rxi, ryi;
+                        # float rx, ry;
+                        if axis == 0:
+                            rxi = qxi - direction
+                            ryi = pyi
+                            rx = (1 - 1. / _is) * ((2. / (_is - 1)) * rxi - 1)
+                            ry = py
+                        else:
+                            rxi = pxi
+                            ryi = qyi - direction
+                            rx = px
+                            ry = (1 - 1. / _is) * ((2. / (_is - 1)) * ryi - 1)
+
+                        for mode in range(2):
+                            # float* face;
+                            # float* grad_face;
+                            if mode == 0:
+                                if qfn < 0:
+                                    continue
+                                face = faces[(bn * nf + qfn) * 3 * 3:]
+                                grad_face = grad_faces[(bn * nf + qfn) * 3 * 3:]
+                            elif mode == 1:
+                                if qfn_last != pfn:
+                                    continue
+                                if pfn < 0:
+                                    continue
+                                face = faces[(bn * nf + pfn) * 3 * 3:]
+                                grad_face = grad_faces[(bn * nf + pfn) * 3 * 3:]
+
+                            # /* for each edge */
+                            for vi0 in range(3):
+                                # /* get vertices */
+                                vi1 = (vi0 + 1) % 3
+                                v0 = face[vi0 * 3:]
+                                v1 = face[vi1 * 3:]
+
+                                # /* get cross point */
+                                # float sx, sy;
+                                if axis == 0:
+                                    sx = (py - v0[1]) * (v1[0] - v0[0]) / (v1[1] - v0[1]) + v0[0]
+                                    sy = py
+                                else:
+                                    sx = px
+                                    sy = (px - v0[0]) * (v1[1] - v0[1]) / (v1[0] - v0[0]) + v0[1]
+
+                                # /* continue if not cross edge */
+                                if (rx < sx) != (sx < qx):
+                                    continue
+                                if (ry < sy) != (sy < qy):
+                                    continue
+                                if (v0[1] < sy) != (sy < v1[1]):
+                                    continue
+                                if (v0[0] < sx) != (sx < v1[0]):
+                                    continue
+
+                                # /* signed distance (positive if pi < qi) */
+                                # float dist_v0, dist_v1;
+                                if axis == 0:
+                                    dist_v0 = (px - sx) * (v1[1] - v0[1]) / (v1[1] - py)
+                                    dist_v1 = (px - sx) * (v0[1] - v1[1]) / (v0[1] - py)
+                                else:
+                                    dist_v0 = (py - sy) * (v1[0] - v0[0]) / (v1[0] - px)
+                                    dist_v1 = (py - sy) * (v0[0] - v1[0]) / (v0[0] - px)
+
+                                # /* add small epsilon */
+                                dist_v0 = dist_v0 + eps if 0 < dist_v0 else dist_v0 - eps
+                                dist_v1 = dist_v1 + eps if 0 < dist_v1 else dist_v1 - eps
+
+                                # /* gradient */
+                                g_v0 = grad_images[i] * diff / dist_v0
+                                g_v1 = grad_images[i] * diff / dist_v1
+
+                                grad_face[vi0 * 3 + axis] += g_v0
+                                grad_face[vi1 * 3 + axis] += g_v1
+
+                        qfn_last = qfn
+
+        return org_grad_faces,
 
 
 def rasterize_silhouettes(faces, image_size=256, anti_aliasing=True, near=0.1, far=100, eps=1e-3):

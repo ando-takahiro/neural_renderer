@@ -79,7 +79,7 @@ def run():
         loss = model()
         loss.backward()
         optimizer.update()
-        print i, loss
+        print(i, loss)
 
     # draw object
     for num, azimuth in enumerate(range(0, 360, 4)):

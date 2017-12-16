@@ -83,7 +83,7 @@ def run():
         images = model.renderer.render(model.vertices, model.faces, cf.tanh(model.textures))
         image = images.data.get()[0]
         scipy.misc.toimage(image, cmin=0, cmax=1).save('%s/_tmp_%04d.png' % (working_directory, i))
-        print i, loss, model.camera_position.grad
+        print(i, loss, model.camera_position.grad)
         if loss.data < 80:
             break
     make_gif(working_directory, args.filename_output)

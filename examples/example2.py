@@ -10,6 +10,7 @@ import chainer
 import chainer.functions as cf
 import numpy as np
 import scipy.misc
+import skimage.transform
 
 import neural_renderer
 
@@ -30,10 +31,14 @@ class Model(chainer.Link):
             self.textures = textures
 
             # load reference image
-            self.image_ref = scipy.misc.imread(filename_ref).astype('float32').mean(-1) / 255.
+            SIZE = 32
+            self.image_ref = skimage.transform.resize(
+                scipy.misc.imread(filename_ref), output_shape=(SIZE, SIZE)
+            ).astype('float32').mean(-1) / 255.
 
             # setup renderer
             renderer = neural_renderer.Renderer()
+            renderer.image_size = SIZE
             self.renderer = renderer
 
     def to_gpu(self):
@@ -70,7 +75,8 @@ def run():
     working_directory = os.path.dirname(args.filename_output_result)
 
     model = Model(args.filename_obj, args.filename_ref)
-    model.to_gpu()
+    if args.gpu >= 0:
+        model.to_gpu()
 
     optimizer = chainer.optimizers.Adam()
     optimizer.setup(model)
@@ -80,7 +86,10 @@ def run():
         loss.backward()
         optimizer.update()
         images = model.renderer.render_silhouettes(model.vertices, model.faces)
-        image = images.data.get()[0]
+        if args.gpu >= 0:
+            image = images.data.get()[0]  # get() is to copy data from CPU to CPU
+        else:
+            image = images.data[0]
         scipy.misc.toimage(image, cmin=0, cmax=1).save('%s/_tmp_%04d.png' % (working_directory, i))
     make_gif(working_directory, args.filename_output_optimization)
 
@@ -88,7 +97,10 @@ def run():
     for num, azimuth in enumerate(range(0, 360, 4)):
         model.renderer.eye = neural_renderer.get_points_from_angles(2.732, 0, azimuth)
         images = model.renderer.render(model.vertices, model.faces, model.textures)
-        image = images.data.get()[0].transpose((1, 2, 0))
+        if args.gpu >= 0:
+            image = images.data.get()[0].transpose((1, 2, 0))
+        else:
+            image = images.data[0].transpose((1, 2, 0))
         scipy.misc.toimage(image, cmin=0, cmax=1).save('%s/_tmp_%04d.png' % (working_directory, num))
     make_gif(working_directory, args.filename_output_result)
 
