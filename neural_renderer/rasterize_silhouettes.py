@@ -280,20 +280,20 @@ class RasterizeSilhouette(chainer.Function):
         faces = faces.reshape(-1)  # flatten
         for i in range(image_size * image_size):
             # /* current position & index */
-            nf :int = num_faces                   # // short name
-            _is :int = image_size                 # // short name
-            is2 :int = _is * _is                  # // number of pixels
-            pi :int = i                           # // pixel index on all batches
-            bn :int = pi // (is2)                  # // batch number
-            pyi :int = (pi % (is2)) // _is         # // index of current y-position [0, _is - 1]
-            pxi :int = (pi % (is2)) % _is         # // index of current x-position [0, _is - 1]
-            py :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
-            px :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
+            nf  = num_faces                   # // short name
+            _is = image_size                 # // short name
+            is2 = _is * _is                  # // number of pixels
+            pi = i                           # // pixel index on all batches
+            bn = pi // (is2)                  # // batch number
+            pyi = (pi % (is2)) // _is         # // index of current y-position [0, _is - 1]
+            pxi = (pi % (is2)) % _is         # // index of current x-position [0, _is - 1]
+            py = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
+            px = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
 
             # /* for each face */
             # float* face;          # // current face
-            z_min :float = far      # // z of nearest face
-            z_min_fn :float = -1    # // face number of nearest face
+            z_min = far      # // z of nearest face
+            z_min_fn = -1    # // face number of nearest face
             for fn in range(nf):
                 # /* go to next face */
                 if fn == 0:
@@ -388,22 +388,22 @@ class RasterizeSilhouette(chainer.Function):
                 break
 
             # /* compute current position & index */
-            nf :int = num_faces
-            _is :int = image_size
-            is2 :int = _is * _is                    # // number of pixels
-            pi :int = i                             # // pixel index on all batches
-            bn :int = pi // (is2)                    # // batch number
-            pyi :int = (pi % (is2)) // _is           # // index of current y-position [0, _is]
-            pxi :int = (pi % (is2)) % _is           # // index of current x-position [0, _is]
-            py :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
-            px :float = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
+            nf = num_faces
+            _is = image_size
+            is2 = _is * _is                    # // number of pixels
+            pi = i                             # // pixel index on all batches
+            bn = pi // (is2)                    # // batch number
+            pyi = (pi % (is2)) // _is           # // index of current y-position [0, _is]
+            pxi = (pi % (is2)) % _is           # // index of current x-position [0, _is]
+            py = (1 - 1. / _is) * ((2. / (_is - 1)) * pyi - 1)   # // coordinate of y-position [-1, 1]
+            px = (1 - 1. / _is) * ((2. / (_is - 1)) * pxi - 1)   # // coordinate of x-position [-1, 1]
 
-            pfn :int = face_index_map[pi]       # // face number of current position
-            pp :float = images[pi]              # // pixel intensity of current position
+            pfn = face_index_map[pi]       # // face number of current position
+            pp = images[pi]              # // pixel intensity of current position
 
             for axis in range(2):
                 for direction in iter(-1, 1):
-                    qfn_last: int = pfn
+                    qfn_last = pfn
                     for d_pq in range(1, _is):
                         # int qxi, qyi;
                         # float qx, qy;
@@ -422,10 +422,10 @@ class RasterizeSilhouette(chainer.Function):
                             if qyi < 0 or _is <= qyi:
                                 break
 
-                        qi: int = bn * is2 + qyi * _is + qxi
-                        qp: float = images[qi]
-                        diff: float = qp - pp
-                        qfn: int = face_index_map[qi]
+                        qi = bn * is2 + qyi * _is + qxi
+                        qp = images[qi]
+                        diff = qp - pp
+                        qfn = face_index_map[qi]
 
                         if diff == 0:
                             continue                    # // continue if same pixel value
